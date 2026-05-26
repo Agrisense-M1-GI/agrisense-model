@@ -1,34 +1,57 @@
 import os
+import glob
+import json
 import shutil
 from google import genai
+from google.genai import types
 from PIL import Image, ImageChops, ImageStat
 
 class AgriSenseIAService:
     def __init__(self, api_key: str = None):
-        self.client = genai.Client(api_key="AIzaSyBaj0tXKfyJc1PxijLJFT7l9gKLgEhokLg")
+        """Initialise le client Gemini et définit les fichiers de mémoire locale."""
+        self.client = genai.Client(api_key="AIzaSyAq067XHQKTVTVFeMN2y3gPsHAwEMq1XKo")
         self.model_name = "gemini-2.5-flash"
         
-        # Fichiers de persistance locales
+        # Fichiers de persistance pour l'algorithme local et le suivi d'état
         self.chemin_image_sauvegarde = "derniere_capture.jpg"
         self.chemin_statut_sauvegarde = "dernier_statut.txt"
 
+    def _recuperer_image_recente(self, dossier_backend: str) -> str:
+        """Scane le dossier du backend et retourne le chemin de l'image la plus récente (via timestamp)."""
+        extensions = ('*.jpg', '*.jpeg', '*.png')
+        fichiers = []
+        for ext in extensions:
+            fichiers.extend(glob.glob(os.path.join(dossier_backend, ext)))
+        
+        if not fichiers:
+            return None
+            
+        # Tri des fichiers du plus récent au plus ancien
+        fichiers.sort(key=os.path.getmtime, reverse=True)
+        return fichiers[0]
+
+    def _optimiser_image(self, chemin_image: str, max_taille=(800, 800)) -> Image.Image:
+        """Redimensionne l'image à la volée pour diviser par 4 la consommation de tokens."""
+        img = Image.open(chemin_image).convert('RGB')
+        img.thumbnail(max_taille, Image.Resampling.LANCZOS)
+        return img
+
     def _lire_dernier_statut(self) -> str:
-        """Lit le dernier statut enregistré. Renvoie 'Normal' par défaut."""
+        """Récupère le dernier statut de santé connu de la plante en mémoire locale."""
         if os.path.exists(self.chemin_statut_sauvegarde):
             with open(self.chemin_statut_sauvegarde, "r", encoding="utf-8") as f:
                 return f.read().strip()
         return "Normal"
 
     def _sauvegarder_statut(self, statut: str):
-        """Enregistre le statut actuel pour le prochain cycle."""
+        """Sauvegarde le nouveau statut pour sécuriser le prochain cycle d'analyse."""
         with open(self.chemin_statut_sauvegarde, "w", encoding="utf-8") as f:
             f.write(statut)
 
     def _evaluer_changement_reel(self, chemin_actuelle: str, seuil: float = 2.0) -> bool:
-        """Compare l'image actuelle avec la dernière capture."""
+        """Compare mathématiquement les pixels de l'image actuelle avec la dernière analysée."""
         if not os.path.exists(self.chemin_image_sauvegarde):
-            print("[Info] Première capture absolue. Analyse forcée.")
-            return True
+            return True # Pas d'historique, analyse obligatoire
             
         img1 = Image.open(chemin_actuelle).convert('RGB')
         img2 = Image.open(self.chemin_image_sauvegarde).convert('RGB')
@@ -40,112 +63,100 @@ class AgriSenseIAService:
         
         return moyenne_diff > seuil
 
-    def analyser_evolution_champ(self, chemin_image_actuelle: str, dossier_references: str = None) -> dict:
+    def executer_analyse_vers_json(self, dossier_backend: str, culture_cible: str) -> dict:
+        """
+        Exécute la chaîne complète d'analyse (Filtre local -> Analyse IA Contextuelle).
+        Retourne un dictionnaire structuré au format JSON pour le Backend.
+        """
         try:
-            # 1. Récupération AUTOMATIQUE du statut précédent en mémoire
+            # 1. Détection et récupération de la photo du capteur
+            chemin_actuelle = self._recuperer_image_recente(dossier_backend)
+            if not chemin_actuelle:
+                return {"succes": False, "error": "Aucune image trouvée dans le dossier du backend."}
+                
             statut_precedent = self._lire_dernier_statut()
-            print(f"[Mémoire] Statut de la période précédente : {statut_precedent}")
             
-            # 2. Évaluation du changement de pixels
-            a_change = self._evaluer_changement_reel(chemin_image_actuelle)
+            # 2. Vérification par le filtre de pixels local léger
+            a_change = self._evaluer_changement_reel(chemin_actuelle)
             
-            # --- LOGIQUE DE SÉCURITÉ AUTOMATIQUE ---
+            # --- Sécurité Anticrise ---
+            # Si aucun changement de pixel ET que la plante était saine (Normal), on économise l'API.
             if not a_change and statut_precedent == "Normal":
-                shutil.copy(chemin_image_actuelle, self.chemin_image_sauvegarde)
+                shutil.copy(chemin_actuelle, self.chemin_image_sauvegarde)
                 return {
+                    "succes": True,
                     "analyse_requise": False,
-                    "statut": "Normal",
-                    "message": "Plante stable et saine. Requête IA économisée."
+                    "fichier_traite": os.path.basename(chemin_actuelle),
+                    "ia_output": {
+                        "diagnostic_titre": "Plante stable et saine",
+                        "statut_general": "Normal",
+                        "diagnostic_sante": "Aucun changement détecté par rapport au cycle précédent. La plante reste saine.",
+                        "actions_suggerees": ["Maintenir la surveillance automatique."]
+                    }
                 }
             
             if not a_change and statut_precedent != "Normal":
-                print("[Sécurité] Aucun changement de pixel, mais la plante est déjà malade. Ré-analyse IA forcée pour suivi.")
+                print(f"[Sécurité] Pixels stables, mais statut précédent '{statut_precedent}'. Suivi IA forcé.")
 
-            # --- RECONSTRUCTION DE LA REQUÊTE POUR L'IA ---
-            contenu_requete = []
+            # 3. Préparation des données optimisées pour l'API
+            img_analyse = self._optimiser_image(chemin_actuelle)
             
-            # Injection des images de référence étiquetées
-            if dossier_references and os.path.exists(dossier_references):
-                extensions = ('.jpg', '.jpeg', '.png')
-                fichiers = [f for f in os.listdir(dossier_references) if f.lower().endswith(extensions)]
-                
-                if fichiers:
-                    contenu_requete.append("--- IMAGES DE RÉFÉRENCE DE SÉCURITÉ (ETAT IDÉAL ET SAIN EXIGÉ) ---")
-                    for f in fichiers[:3]:
-                        contenu_requete.append(f"Fichier référence : {f}")
-                        contenu_requete.append(Image.open(os.path.join(dossier_references, f)))
-                    contenu_requete.append("--- FIN DES IMAGES DE RÉFÉRENCE ---")
-
-            # Injection de l'image actuelle du champ
-            contenu_requete.append("--- IMAGE ACTUELLE DU CHAMP À ANALYSER CRITIQUEMENT ---")
-            contenu_requete.append(Image.open(chemin_image_actuelle))
+            contenu_requete = [
+                f"Culture ciblée dans ce champ : {culture_cible}",
+                f"Statut sanitaire lors de l'analyse précédente : {statut_precedent}",
+                "Image actuelle du champ à inspecter :",
+                img_analyse
+            ]
             
-            # Prompt durci et ultra-directif
             prompt = """
-            Tu es l'expert phytosanitaire et agronome en chef du système AgriSense. 
-            Ton rôle est de détecter sans complaisance la moindre anomalie sur l'IMAGE ACTUELLE DU CHAMP.
-
-            CONSIGNES D'ANALYSE TRÈS STRICTES :
-            1. Compare l'IMAGE ACTUELLE avec les IMAGES DE RÉFÉRENCE saines fournies.
-            2. Si l'image actuelle présente des taches (brunes, noires, jaunes), des trous, des flétrissements, des feuilles qui pendent ou une couleur jaunie/pâle par rapport aux références, la plante est MALADE ou STRESSÉE. 
-            3. Il est STRICTEMENT INTERDIT de répondre 'Plante Saine' ou 'RAS' si la feuille inspectée est visiblement endommagée, tachée ou flétrie.
-
-            Format de réponse attendu (STRICT, court, en français pour écran mobile) :
-            🚨 [DIAGNOSTIC : Écris ici le nom de la maladie ou du problème d'irrigation, ou 'Plante Saine' si aucun défaut]
-            - **Statut général :** [Moyen ou Critique - Ne mets SURTOUT PAS 'Normal' s'il y a un défaut]
-            - **Diagnostic Irrigation :** [Sol sec / Humidité correcte / Excès d'eau / Flétrissement visible]
-            - **Diagnostic Santé :** [Décris ici précisément les taches ou anomalies observées sur la feuille]
+            Tu es l'expert en vision par ordinateur et agronomie pour AgriSense. 
+            Analyse l'image de la plante (culture ciblée fournie) et détecte toute anomalie (taches, chlorose, nécrose, flétrissement).
             
-            🛠️ ACTIONS SUGGÉRÉES :
-            1. [Action urgente 1]
-            2. [Action urgente 2]
+            Tu dois obligatoirement formuler ta réponse en respectant la structure JSON demandée.
+            Si la plante a le moindre défaut visuel (même un stress léger), le champ 'statut_general' ne peut pas être 'Normal'.
             """
-            
             contenu_requete.append(prompt)
 
-            # Appel API
+            # 4. Définition du schéma JSON strict pour éviter les bugs de structure
+            schema_json = {
+                "type": "OBJECT",
+                "properties": {
+                    "diagnostic_titre": {"type": "STRING", "description": "Nom précis de la maladie/stress détecté ou 'Plante Saine'"},
+                    "statut_general": {"type": "STRING", "description": "Doit être strictly unique : 'Normal', 'Moyen' ou 'Critique'"},
+                    "diagnostic_sante": {"type": "STRING", "description": "Description technique et très brève des symptômes visibles observés"},
+                    "actions_suggerees": {
+                        "type": "ARRAY",
+                        "items": {"type": "STRING"},
+                        "description": "Liste de 2 actions physiques correctives immédiates à afficher à l'utilisateur"
+                    }
+                },
+                "required": ["diagnostic_titre", "statut_general", "diagnostic_sante", "actions_suggerees"]
+            }
+
+            # 5. Appel de l'API Gemini avec Structured Outputs
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=contenu_requete
+                contents=contenu_requete,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema_json,
+                    temperature=0.1
+                )
             )
             
-            texte_reponse = response.text
+            # Conversion de la réponse texte de l'IA en dictionnaire Python (JSON)
+            resultat_ia_json = json.loads(response.text)
             
-            # Détection du statut pour la persistance locale
-            nouveau_statut = "Normal"
-            if "Critique" in texte_reponse or "CRITIQUE" in texte_reponse:
-                nouveau_statut = "Critique"
-            elif "Moyen" in texte_reponse or "MOYEN" in texte_reponse:
-                nouveau_statut = "Moyen"
-            elif "Plante Saine" not in texte_reponse and "RAS" not in texte_reponse:
-                nouveau_statut = "Moyen"
-
-            # Sauvegarde de l'état sur le disque
-            shutil.copy(chemin_image_actuelle, self.chemin_image_sauvegarde)
-            self._sauvegarder_statut(nouveau_statut)
-            print(f"[Mémoire] Nouveau statut '{nouveau_statut}' enregistré pour le prochain cycle.")
+            # 6. Sauvegarde des états locaux pour la mémoire du prochain cycle
+            shutil.copy(chemin_actuelle, self.chemin_image_sauvegarde)
+            self._sauvegarder_statut(resultat_ia_json.get("statut_general", "Normal"))
 
             return {
+                "succes": True,
                 "analyse_requise": True,
-                "statut": nouveau_statut,
-                "resultat": texte_reponse
+                "fichier_traite": os.path.basename(chemin_actuelle),
+                "ia_output": resultat_ia_json
             }
 
         except Exception as e:
-            return {"error": f"Erreur lors de l'analyse : {str(e)}"}
-
-# --- Bloc de test autonome ---
-if __name__ == "__main__":
-    # Pense à nettoyer ton fichier "dernier_statut.txt" avant de re-tester la photo malade !
-    service_ia = AgriSenseIAService(api_key="AIzaSyBaj0tXKfyJc1PxijLJFT7l9gKLgEhokLg")
-    
-    print("--- Lancement de la supervision AgriSense ---")
-    analyse = service_ia.analyser_evolution_champ(
-        chemin_image_actuelle="capteur_champ.jpg", 
-        dossier_references="references"
-    )
-    
-    if analyse.get("analyse_requise"):
-        print(analyse["resultat"])
-    else:
-        print(analyse.get("message") or analyse.get("error"))
+            return {"succes": False, "error": f"Erreur système IA : {str(e)}"}
