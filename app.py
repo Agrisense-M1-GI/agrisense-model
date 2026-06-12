@@ -1,51 +1,17 @@
 import os
 from flask import Flask, request, jsonify
-from ia_service import AgriSenseIAService  # On importe ton travail !
+from ia_service import AgriSenseIAService
 
 app = Flask(__name__)
 
-# On initialise ton service avec ta clé API
-# Idéalement, la clé est stockée dans les variables d'environnement de la machine
-API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyAq067XHQKTVTVFeMN2y3gPsHAwEMq1XKo")
+# Initialisation du service (Recherche automatique de la clé d'environnement ou repli local)
+API_KEY = os.environ.get("GEMINI_API_KEY", "TA_CLEF_ICI")
 service_ia = AgriSenseIAService(api_key=API_KEY)
 
-# --- CRÉATION DE TON PREMIER ENDPOINT ---
-@app.route('/api/ia/analyser', methods=['POST'])
-def analyser_champ():
-    """
-    Cet endpoint reçoit les demandes du backend.
-    Il attend le nom de la culture et va scanner le dossier pour analyser l'image.
-    """
-    try:
-        # 1. On récupère les données envoyées par le Backend (au format JSON)
-        donnees_recues = request.get_json()
-        
-        if not donnees_recues or 'culture' not in donnees_recues:
-            return jsonify({
-                "succes": False, 
-                "error": "Données manquantes. Le champ 'culture' est obligatoire."
-            }), 400
-            
-        culture = donnees_recues['culture']
-        # Vous pouvez définir ensemble le chemin du dossier partagé
-        dossier_images = donnees_recues.get('dossier_images', 'images_backend')
 
-        print(f"[Endpoint] Requête reçue pour analyser du {culture} dans {dossier_images}")
-
-        # 2. On appelle TA fonction de diagnostic que nous avons écrite
-        resultat = service_ia.executer_analyse_vers_json(
-            dossier_backend=dossier_images,
-            culture_cible=culture
-        )
-
-        # 3. On renvoie le résultat JSON directement au Backend sur le réseau
-        return jsonify(resultat), 200
-
-    except Exception as e:
-        return jsonify({"succes": False, "error": f"Erreur serveur endpoint : {str(e)}"}), 500
-
-
-# --- UN DEUXIÈME ENDPOINT DE SÉCURITÉ (POUR VÉRIFIER SI LE SERVEUR TOURNE) ---
+# =========================================================================
+# ENDPOINT 1 : STATUT / HEALTHCHECK
+# =========================================================================
 @app.route('/api/ia/statut', methods=['GET'])
 def verifier_statut():
     return jsonify({
@@ -55,7 +21,70 @@ def verifier_statut():
     }), 200
 
 
+# =========================================================================
+# ENDPOINT 2 : DIAGNOSTIC PHYTOSANITAIRE (Feuilles / Maladies)
+# =========================================================================
+@app.route('/api/ia/analyser', methods=['POST'])
+def analyser_champ():
+    try:
+        donnees_recues = request.get_json()
+        
+        if not donnees_recues or 'culture' not in donnees_recues:
+            return jsonify({
+                "succes": False, 
+                "error": "Données malformées. Le champ 'culture' est obligatoire."
+            }), 400
+            
+        culture = donnees_recues['culture']
+        dossier_images = donnees_recues.get('dossier_images', 'images_backend')
+
+        # Appel de la brique de diagnostic
+        resultat = service_ia.executer_analyse_vers_json(
+            dossier_backend=dossier_images,
+            culture_cible=culture
+        )
+        return jsonify(resultat), 200
+
+    except Exception as e:
+        return jsonify({"succes": False, "error": f"Erreur serveur endpoint diagnostic : {str(e)}"}), 500
+
+
+# =========================================================================
+# ENDPOINT 3 : PRÉDICTION ET CONSEIL DE CULTURE (Sol nu / Métriques JSON)
+# =========================================================================
+@app.route('/api/ia/predire', methods=['POST'])
+def predire_culture():
+    """
+    Endpoint appelé avant de planter. Reçoit les métriques environnementales 
+    et calcule l'indice d'adéquation pour l'ananas, la mangue, la tomate, etc.
+    """
+    try:
+        donnees_recues = request.get_json()
+        
+        if not donnees_recues or 'metriques' not in donnees_recues:
+            return jsonify({
+                "succes": False,
+                "error": "Données de capteurs manquantes. L'objet 'metriques' est obligatoire."
+            }), 400
+            
+        metriques = donnees_recues['metriques']
+        # Chemin optionnel si le backend transmet une photo du sol nu
+        dossier_images = donnees_recues.get('dossier_images', None)
+
+        print(f"[Endpoint] Demande de prédiction agronomique reçue. Mode dossier : {dossier_images}")
+
+        # Appel de la brique prédictive
+        resultat_prediction = service_ia.executer_prediction_culture(
+            dossier_backend=dossier_images,
+            metriques_sol=metriques
+        )
+        
+        return jsonify(resultat_prediction), 200
+
+    except Exception as e:
+        return jsonify({"succes": False, "error": f"Erreur serveur endpoint prédiction : {str(e)}"}), 500
+
+
 if __name__ == "__main__":
-    # On lance le serveur sur le port 5000 de ta machine
-    print("--- Serveur Web AgriSense IA démarré sur http://127.0.0.1:5000 ---")
+    print("--- Serveur Web AgriSense IA connecté et actif [Port 5000] ---")
     app.run(host="0.0.0.0", port=5000, debug=True)
