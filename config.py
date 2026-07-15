@@ -10,13 +10,13 @@ MOONDREAM_MODEL = os.getenv("MOONDREAM_MODEL", "moondream")
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "llama3.2:1b")  # 1b recommandé sur machine modeste
 
 # --- Backend externe (celui qui nous envoie les images / expose les endpoints de résultats) ---
-BACKEND_IMAGE_RESULT_URL = os.getenv("BACKEND_IMAGE_RESULT_URL", "https://webhook.site/d4d169bb-9526-4d3c-bdf3-0aa655e233c9")
-BACKEND_METRICS_RESULT_URL = os.getenv("BACKEND_METRICS_RESULT_URL", "https://webhook.site/d4d169bb-9526-4d3c-bdf3-0aa655e233c9")
+BACKEND_IMAGE_RESULT_URL = os.getenv("BACKEND_IMAGE_RESULT_URL", "https://webhook.site/d4d169bb-9526-4d3c-bdf3-0aa655e233c9/api/ia/callback/image")
+BACKEND_METRICS_RESULT_URL = os.getenv("BACKEND_METRICS_RESULT_URL", "https://webhook.site/d4d169bb-9526-4d3c-bdf3-0aa655e233c9/api/ia/callback/metriques")
 
 # --- Backend externe : endpoint agrégeant les métriques des capteurs sol ---
 # (on interroge le BACKEND, pas les capteurs directement — c'est lui qui centralise les données)
-# Récupération déclenchée manuellement pour l'instant (voir POST /metrics/trigger)
-BACKEND_METRICS_SOURCE_URL = os.getenv("BACKEND_METRICS_SOURCE_URL", "http://localhost:9000/api/metrics?limit=30")
+# Récupération déclenchée manuellement pour l'instant (voir POST /metrics/trigger)c
+BACKEND_METRICS_SOURCE_URL = os.getenv("BACKEND_METRICS_SOURCE_URL", "https://webhook.site/d4d169bb-9526-4d3c-bdf3-0aa655e233c9/api/ia/metrics-source?limit=30")
 METRICS_MAX_FETCH = int(os.getenv("METRICS_MAX_FETCH", "30"))
 
 # --- Stockage ---
